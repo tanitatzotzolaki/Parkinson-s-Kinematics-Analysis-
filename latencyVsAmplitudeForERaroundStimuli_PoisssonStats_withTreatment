@@ -1,0 +1,211 @@
+from statsmodels.stats import rates
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+def plotLatencyVsAmplitude(config):
+  
+  onlyKeepBoutsWithLatencySmallerThan = config["onlyKeepBoutsWithLatencySmallerThan"]
+  onlyKeepBoutsWithLatencyBiggerThan  = config["onlyKeepBoutsWithLatencyBiggerThan"]
+  onlyKeepBoutsWithFirstBendAmpOver   = config["onlyKeepBoutsWithFirstBendAmpOver"]
+  plotTrialNumberWithSize             = config["plotTrialNumberWithSize"]
+  plotLatencyOrAmpDependingOnSize     = config["plotLatencyOrAmpDependingOnSize"] if 'plotLatencyOrAmpDependingOnSize' in config else False
+  genotypeOrCondition = config["genotypeOrCondition"]
+  kinematicParametersExcelFile = config['kinematicParametersExcelFile']
+  fps = config["fps"]
+  simulationTimeSeconds = config["simulationTimeSeconds"]
+  xAxisParameterName = config['xAxisParameterName']
+  genotypeOrConditionToRemove = config['genotypeOrConditionToRemove']
+  latencyCutOffForProportionsCalculation = config['latencyCutOffForProportionsCalculation']
+  genotypeNbStimuliApplied = config['genotypeNbStimuliApplied']
+  
+  data = pd.read_excel(kinematicParametersExcelFile)
+  
+  print(data)
+
+  dataToPlot = data[["BoutStart", xAxisParameterName, "Genotype", "Condition", "Trial_ID"]]
+  
+  if genotypeOrCondition == "GenotypeCondition":
+    dataToPlot.loc[:, 'GenotypeCondition'] = dataToPlot['Genotype'].astype(str) + '+' + dataToPlot['Condition'].astype(str)
+    dataToPlot.loc[:, 'GenotypeCondition'] = dataToPlot['GenotypeCondition'].str.replace(r'(.*)\+0$', r'\1', regex=True)
+    dataToPlot = dataToPlot.drop(['Genotype', 'Condition'], axis=1)
+    print("Merged genotype and conditions columns")
+
+  dataToPlot['BoutStart'] = dataToPlot['BoutStart']/fps - simulationTimeSeconds
+  
+  print("")
+  print(len(dataToPlot), "bouts initially")
+  
+  datasetSizeBefore = len(dataToPlot)
+  if onlyKeepBoutsWithLatencySmallerThan < 1:
+    dataToPlot = dataToPlot[dataToPlot['BoutStart'] <= onlyKeepBoutsWithLatencySmallerThan]
+  datasetSizeAfter = len(dataToPlot)
+  print(datasetSizeBefore - datasetSizeAfter, "bouts removed because latency was too high (above", onlyKeepBoutsWithLatencySmallerThan, ")")
+  
+  datasetSizeBefore = len(dataToPlot)
+  if onlyKeepBoutsWithLatencyBiggerThan > -1:
+    dataToPlot = dataToPlot[dataToPlot['BoutStart'] >= onlyKeepBoutsWithLatencyBiggerThan]
+  datasetSizeAfter = len(dataToPlot)
+  print(datasetSizeBefore - datasetSizeAfter, "bouts removed because latency was too small (bellow", onlyKeepBoutsWithLatencyBiggerThan, ")")
+  
+  datasetSizeBefore = len(dataToPlot)
+  if onlyKeepBoutsWithFirstBendAmpOver > -1:
+    dataToPlot = dataToPlot[dataToPlot[xAxisParameterName] >= onlyKeepBoutsWithFirstBendAmpOver]
+  datasetSizeAfter = len(dataToPlot)
+  print(datasetSizeBefore - datasetSizeAfter, "bouts removed because first bend amplitude was too small (bellow", onlyKeepBoutsWithFirstBendAmpOver, ")")
+  
+  allPossibleGenCondOptions = np.unique(dataToPlot[genotypeOrCondition])
+  
+  if len(genotypeNbStimuliApplied):
+    statistics = pd.DataFrame({possibleGenCondOption:[0 for i in range(0, 7)] for possibleGenCondOption in allPossibleGenCondOptions})
+    statistics.index = ['Nb of stimuli applied', 'Nb of ER responses', 'ER response rate', 'Nb of low lat ER', 'Low lat ER proportion', 'Nb of high lat ER', 'High lat ER proportion']
+    significance = pd.DataFrame({allPossibleGenCondOptions[i1] + " vs " + allPossibleGenCondOptions[i2] : [0 for i in range(0, 3)] for i1 in range(0, len(allPossibleGenCondOptions)) for i2 in range(i1+1, len(allPossibleGenCondOptions))})
+    significance.index = ['ER response difference poisson p value', 'Low lat ER proportion difference poisson p value', 'High lat ER proportion difference poisson p value']
+  
+  print("")
+  print(len(dataToPlot), "bouts in total after removal procedures. Of which there are:")
+  
+  for possibleGenCondOption in allPossibleGenCondOptions:
+    print(len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption]), possibleGenCondOption, "bouts (", (len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption]) / len(dataToPlot)) * 100, "%)")
+    # Calculating ER response rate to stimuli
+    if len(genotypeNbStimuliApplied):
+      statistics.loc['Nb of stimuli applied', possibleGenCondOption] = genotypeNbStimuliApplied[possibleGenCondOption]
+      statistics.loc['Nb of ER responses', possibleGenCondOption]    = len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption])
+      statistics.loc['ER response rate', possibleGenCondOption]      = (len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption]) / genotypeNbStimuliApplied[possibleGenCondOption]) * 100
+      # Poisson statistical significance calculation
+      crossedPossibleGenCondOption = False
+      for possibleGenCondOption2 in allPossibleGenCondOptions:
+        if crossedPossibleGenCondOption:
+          ERresp2    = len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption2])
+          nbStimuli2 = genotypeNbStimuliApplied[possibleGenCondOption2]
+          ERresp1    = len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption])
+          nbStimuli1 = genotypeNbStimuliApplied[possibleGenCondOption]
+          print("This:" + possibleGenCondOption2 + ' vs ' + possibleGenCondOption)
+          significance.loc['ER response difference poisson p value', possibleGenCondOption + ' vs ' + possibleGenCondOption2] = rates.test_poisson_2indep(ERresp2, nbStimuli2, ERresp1, nbStimuli1)[1]
+        else:
+          if possibleGenCondOption2 == possibleGenCondOption:
+            crossedPossibleGenCondOption = True
+  
+  # Calculating proportions for lower and upper clusters
+  if latencyCutOffForProportionsCalculation != -1:
+    print("")
+    dataLowerCluster = dataToPlot[dataToPlot['BoutStart'] < latencyCutOffForProportionsCalculation]
+    nbBoutsInLowerCluster = len(dataLowerCluster)
+    print(nbBoutsInLowerCluster, "bouts in the lower cluster")
+    allPossibleGenCondOptions = np.unique(dataLowerCluster[genotypeOrCondition])
+    for possibleGenCondOption in allPossibleGenCondOptions:
+      proportionOfBoutsOfGenCondInLowerCluster = (len(dataLowerCluster[dataLowerCluster[genotypeOrCondition] == possibleGenCondOption]) / nbBoutsInLowerCluster) * 100
+      print(proportionOfBoutsOfGenCondInLowerCluster, "% of", possibleGenCondOption, "(", len(dataLowerCluster[dataLowerCluster[genotypeOrCondition] == possibleGenCondOption]), "bouts )")
+    print("")
+    dataUpperCluster = dataToPlot[dataToPlot['BoutStart'] >= latencyCutOffForProportionsCalculation]
+    nbBoutsInUpperCluster = len(dataUpperCluster)
+    print(nbBoutsInUpperCluster, "bouts in the upper cluster")
+    allPossibleGenCondOptions = np.unique(dataUpperCluster[genotypeOrCondition])
+    for possibleGenCondOption in allPossibleGenCondOptions:
+      proportionOfBoutsOfGenCondInLowerCluster = (len(dataUpperCluster[dataUpperCluster[genotypeOrCondition] == possibleGenCondOption]) / nbBoutsInUpperCluster) * 100
+      print(proportionOfBoutsOfGenCondInLowerCluster, "% of", possibleGenCondOption, "(", len(dataUpperCluster[dataUpperCluster[genotypeOrCondition] == possibleGenCondOption]), "bouts )")
+    
+    if len(genotypeNbStimuliApplied):
+      for possibleGenCondOption in allPossibleGenCondOptions:
+        statistics.loc['Nb of low lat ER', possibleGenCondOption]       = len(dataLowerCluster[dataLowerCluster[genotypeOrCondition] == possibleGenCondOption])
+        statistics.loc['Low lat ER proportion', possibleGenCondOption]  = (len(dataLowerCluster[dataLowerCluster[genotypeOrCondition] == possibleGenCondOption]) / len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption])) * 100
+        statistics.loc['Nb of high lat ER', possibleGenCondOption]      = len(dataUpperCluster[dataUpperCluster[genotypeOrCondition] == possibleGenCondOption])
+        statistics.loc['High lat ER proportion', possibleGenCondOption] = (len(dataUpperCluster[dataUpperCluster[genotypeOrCondition] == possibleGenCondOption]) / len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption])) * 100
+        # Poisson statistical significance calculation
+        crossedPossibleGenCondOption = False
+        for possibleGenCondOption2 in allPossibleGenCondOptions:
+          if crossedPossibleGenCondOption:
+            lowLatNb2     = len(dataLowerCluster[dataLowerCluster[genotypeOrCondition] == possibleGenCondOption2])
+            highLatNb2    = len(dataUpperCluster[dataUpperCluster[genotypeOrCondition] == possibleGenCondOption2])
+            ERresp2       = len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption2])
+            lowLatNb1  = len(dataLowerCluster[dataLowerCluster[genotypeOrCondition] == possibleGenCondOption])
+            highLatNb1 = len(dataUpperCluster[dataUpperCluster[genotypeOrCondition] == possibleGenCondOption])
+            ERResp1    = len(dataToPlot[dataToPlot[genotypeOrCondition] == possibleGenCondOption])
+            try:
+              significance.loc['Low lat ER proportion difference poisson p value', possibleGenCondOption + ' vs ' + possibleGenCondOption2] = rates.test_poisson_2indep(lowLatNb2, ERresp2, lowLatNb1, ERResp1)[1]
+            except:
+              significance.loc['Low lat ER proportion difference poisson p value', possibleGenCondOption + ' vs ' + possibleGenCondOption2] = float("nan")
+            try:
+              significance.loc['High lat ER proportion difference poisson p value', possibleGenCondOption + ' vs ' + possibleGenCondOption2] = rates.test_poisson_2indep(highLatNb2, ERresp2, highLatNb1, ERResp1)[1]
+            except:
+              significance.loc['High lat ER proportion difference poisson p value', possibleGenCondOption + ' vs ' + possibleGenCondOption2] = float('nan')
+          else:
+            if possibleGenCondOption2 == possibleGenCondOption:
+              crossedPossibleGenCondOption = True
+  
+  if len(genotypeNbStimuliApplied):
+    print(statistics)
+    statistics.to_excel('statistics.xlsx')
+    print(significance)
+    significance.to_excel('significance.xlsx')
+  
+  # print(len(dataToPlot[dataToPlot['Condition'] == 'WT']), "bouts remain out of", 74*2, "bouts that should be triggered. Or", (len(dataToPlot[dataToPlot['Condition'] == 'WT']) / (74*2)) * 100, "%")
+  # print(len(dataToPlot[dataToPlot['Condition'] == 'Parkinson']), "bouts remain out of", 74*2, "bouts that should be triggered. Or", (len(dataToPlot[dataToPlot['Condition'] == 'Parkinson']) / (74*2)) * 100, "%")
+  
+  if len(genotypeOrConditionToRemove):
+    if (type(genotypeOrConditionToRemove) == str):
+      dataToPlot = dataToPlot[dataToPlot[genotypeOrCondition] != genotypeOrConditionToRemove]
+      print("")
+      print(len(dataToPlot), "bouts after removal of", genotypeOrConditionToRemove)
+    else:
+      for elem in genotypeOrConditionToRemove:
+        dataToPlot = dataToPlot[dataToPlot[genotypeOrCondition] != elem]
+        print("")
+        print(len(dataToPlot), "bouts after removal of", elem)
+  
+  dataToPlot = dataToPlot.reset_index()
+  
+  if plotTrialNumberWithSize:
+    
+    dataToPlot['TrialNumber'] = 0
+    for i in range(0, len(dataToPlot)):
+      textLength = len(dataToPlot['Trial_ID'][i])
+      characterNminusOne = dataToPlot['Trial_ID'][i][textLength-2:textLength-1]
+      trialNumber = ''
+      if characterNminusOne == "_" or characterNminusOne == "t" or characterNminusOne == ".":
+        trialNumber = dataToPlot['Trial_ID'][i][textLength-1:textLength]
+      else:
+        trialNumber = dataToPlot['Trial_ID'][i][textLength-2:textLength]
+      dataToPlot['TrialNumber'][i] = int(trialNumber)
+    
+    sns.relplot(data=dataToPlot, x=xAxisParameterName, y="BoutStart", hue=genotypeOrCondition, size="TrialNumber")
+    
+    if plotLatencyOrAmpDependingOnSize:
+      sns.relplot(data=dataToPlot, x="TrialNumber", y="BoutStart", hue=genotypeOrCondition)
+      sns.relplot(data=dataToPlot, x="TrialNumber", y="BoutStart", hue=genotypeOrCondition, kind="line")
+      sns.relplot(data=dataToPlot, x="TrialNumber", y=xAxisParameterName, hue=genotypeOrCondition)
+      sns.relplot(data=dataToPlot, x="TrialNumber", y=xAxisParameterName, hue=genotypeOrCondition, kind="line")
+      
+  else:
+    if 'font_scale' in config and config['font_scale'] != 1:
+      sns.set(font_scale=config['font_scale'])
+    plot1 = sns.relplot(data=dataToPlot, x=xAxisParameterName, y="BoutStart", hue=genotypeOrCondition)
+    if 'xaxisName' in config and 'yaxisName' in config:
+      plot1.set_axis_labels(config["xaxisName"], config["yaxisName"])
+    
+  plt.show()
+  
+
+configRemoveSomeBoutsGenotypeAndCondition = {
+  'kinematicParametersExcelFile' : 'lrrk2_ER_All_Apomorphine_3genotypes.xlsx', #'globalParametersInsideCategories.xlsx',
+  'genotypeOrCondition' : "GenotypeCondition", # Set this to either "Genotype" or "Condition" if only one of the columns has values that changes. If both columns has values that changes, set to "GenotypeCondition"
+  'genotypeOrConditionToRemove' : ['Het', 'Het+Apomorphine'], # Set to name of condition or genotype to remove a specific condition or genotype from your dataset; or otherwise set to '' to keep all
+  'fps' : 650, # fps at which the video was recorded
+  'simulationTimeSeconds' : 0.200, # Time in second when the stimuli was applied
+  'xAxisParameterName' : 'maxTailAngleAmplitude', # Name of the parameter to plot on the x axis (amplitude related)
+  'onlyKeepBoutsWithLatencySmallerThan' : 0.1, # Set to 1 to keep all bouts (unit in seconds)
+  'onlyKeepBoutsWithLatencyBiggerThan' : 0, # Set to -1 to keep all bouts (unit in seconds)
+  'onlyKeepBoutsWithFirstBendAmpOver' : 50, # Set to -1 to keep all bouts (unit in degrees)
+  'latencyCutOffForProportionsCalculation' : 0.02, # Set to a value >0 to calculate proportion of each genotype/condition in both the lower and upper clusters; Set to -1 otherwise
+  'genotypeNbStimuliApplied' : {'WT': 51*10, 'Mut': 67*10, 'Het': 34*10, 'WT+Apomorphine': 51*10, 'Mut+Apomorphine': 67*10, 'Het+Apomorphine': 34*10}, # Set to [] if unknown
+  'plotTrialNumberWithSize' : False,
+  'xaxisName' : 'Max Tail Angle Amplitude (deg)',
+  'yaxisName' : 'Latency (sec)',
+  'font_scale' : 1 # Set to a higher value (for example 1.2) for a larger font size
+}
+
+
+#plotLatencyVsAmplitude(configRemoveSomeBoutsOnlyGenotype)
+
+plotLatencyVsAmplitude(configRemoveSomeBoutsGenotypeAndCondition)
